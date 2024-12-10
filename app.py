@@ -4,6 +4,7 @@ import boto3
 import json
 from collections import deque
 import os
+from datetime import datetime
 
 # AWS SageMaker variables
 number_intrusion_detections = 0
@@ -20,23 +21,34 @@ FRAME_RATE = 30  # Tasa de cuadros por segundo (fps)
 frame_buffer = deque(maxlen=DURATION_BEFORE_EVENT * FRAME_RATE)
 
 sagemaker_runtime = boto3.client('runtime.sagemaker',
+                                 region_name='us-east-2')
+s3_client = boto3.client('s3',
                              region_name='us-east-2')
+current_datetime = None
 
 endpoint_name = os.getenv('ENDPOINT_NAME')
 url = os.getenv('PLAYBACK_URL')
-# endpoint_name = 'vigilanteye-endpoint-5'  # Cambia esto al nombre de tu endpoint
+# endpoint_name = 'vigilanteye-endpoint-5'
 
-# url = "https://f52d5bfcf060.us-east-1.playback.live-video.net/api/video/v1/us-east-1.741448944443.channel.5OPtSuDHOoAc.m3u8"
+# url = "https://f52d5bfcf060.us-east-1.playback.live-video.net/api/video/v1/us-east-1.741448944443.channel.o1vOLgias3k7.m3u8"
 vcap = cv2.VideoCapture(url)
 if not vcap.isOpened():
     print("No se pudo abrir la transmisión.")
     exit() 
 fps = vcap.get(cv2.CAP_PROP_FPS)
-w = vcap.get(cv2.CAP_PROP_FRAME_WIDTH)
-h = vcap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+# w = vcap.get(cv2.CAP_PROP_FRAME_WIDTH)
+# h = vcap.get(cv2.CAP_PROP_FRAME_HEIGHT)
 wt = 1 / fps
-fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-out = cv2.VideoWriter('output.mp4', fourcc, 20.0, (int(w),int(h)))
+# fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+path_video = 'output.mp4'
+out = None
+
+def get_video_writter():
+    w = vcap.get(cv2.CAP_PROP_FRAME_WIDTH)
+    h = vcap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    
+    return cv2.VideoWriter(path_video, fourcc, 20.0, (int(w),int(h)))
 
 def record_video(frame, frame_buffer):
     global out
@@ -64,7 +76,7 @@ def isIntruder(predictions):
     if(sequenceIntruder == False):
         number_intrusion_detections = 0
         
-    if number_intrusion_detections == 3:
+    if number_intrusion_detections == 4:
         number_intrusion_detections = 0
         return True
     return False
@@ -89,6 +101,15 @@ def record_intruder(frame, frame_buffer):
 
     if current_time_record - start_time_record > 15:
         intruder_detected = False
+        user_id_string = endpoint_name.split('-')[-1]
+
+        s3_bucket_name = 'vigilanteye-intruder-videos'
+        s3_key = f'{user_id_string}/{current_datetime}.mp4'
+        out.release()
+        s3_client.upload_file(path_video, s3_bucket_name, s3_key)
+        time.sleep(1)
+        os.remove(path_video)
+
         print("Grabación finalizada")
 
 
@@ -119,6 +140,7 @@ while True:
                 if init_record == False and init_record_aux == False:
                     init_record = True
                     init_record_aux = True
+                    out = get_video_writter()            
                 print('Se ha detectado a un intruso')
 
             # Press q to close the video windows before it ends if you want
@@ -131,11 +153,12 @@ while True:
         
         if intruder_detected:
             print('Grabando')
-            # record_intruder(frame, frame_buffer)
+            current_datetime = datetime.now().strftime("%Y-%m-%d %H-%M-%S")
+
+            record_intruder(frame, frame_buffer)
         init_record = False
     else:
         print("Frame is None")
-        break
     i = i + 1
 
 # Release capture and close windows
